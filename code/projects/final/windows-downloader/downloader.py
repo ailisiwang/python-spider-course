@@ -32,10 +32,11 @@ MAX_CONCURRENT = 5
 class DownloadTask:
     """下载任务类"""
     
-    def __init__(self, url, save_path, threads=8):
+    def __init__(self, url, save_path, threads=8, config=None):
         self.url = url
         self.save_path = save_path
         self.threads = threads
+        self.config = config or {}
         self.filename = self.get_filename()
         self.filepath = os.path.join(save_path, self.filename)
         self.total_size = 0
@@ -47,22 +48,103 @@ class DownloadTask:
         self.error = None
         
     def get_filename(self):
-        """从URL获取文件名"""
+        """从URL或HTTP响应头获取正确的文件名"""
         parsed = urlparse(self.url)
         path = parsed.path
         filename = os.path.basename(path)
         
-        if not filename or '.' not in filename:
-            # 尝试从Content-Disposition获取
-            return "downloaded_file"
+        # 先尝试从URL获取文件名
+        if filename and '.' in filename:
+            try:
+                filename = urllib.parse.unquote(filename)
+                return filename
+            except:
+                pass
         
-        # 处理中文编码
+        # URL中没有有效文件名，尝试发送HEAD请求获取
         try:
-            filename = urllib.parse.unquote(filename)
-        except:
-            filename = "downloaded_file"
+            req = urllib.request.Request(self.url, method='HEAD')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
             
-        return filename if filename else "downloaded_file"
+            # 支持代理
+            if self.config.get("proxy"):
+                proxy_handler = urllib.request.ProxyHandler({
+                    'http': self.config['proxy'],
+                    'https': self.config['proxy']
+                })
+                opener = urllib.request.build_opener(proxy_handler)
+            else:
+                opener = urllib.request.build_opener()
+            
+            response = opener.open(req, timeout=10)
+            
+            # 从Content-Disposition获取文件名
+            content_disposition = response.headers.get('Content-Disposition', '')
+            if 'filename=' in content_disposition:
+                # 提取文件名
+                import re
+                match = re.search(r'filename[^;]*=([^;]+)', content_disposition)
+                if match:
+                    filename = match.group(1).strip().strip('"')
+                    try:
+                        filename = urllib.parse.unquote(filename)
+                        return filename
+                    except:
+                        pass
+                        
+        except Exception as e:
+            print(f"获取文件名失败: {e}")
+        
+        # 如果都失败了，生成一个基于URL的合理名称
+        if not filename or '.' not in filename:
+            # 使用URL的hash作为文件名
+            url_hash = hashlib.md5(self.url.encode()).hexdigest()[:8]
+            # 根据域名猜测文件类型
+            ext = self.guess_extension()
+            filename = f"download_{url_hash}{ext}"
+            
+        return filename
+    
+    def guess_extension(self):
+        """根据URL或Content-Type猜测文件扩展名"""
+        try:
+            req = urllib.request.Request(self.url, method='HEAD')
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            
+            if self.config.get("proxy"):
+                proxy_handler = urllib.request.ProxyHandler({
+                    'http': self.config['proxy'],
+                    'https': self.config['proxy']
+                })
+                opener = urllib.request.build_opener(proxy_handler)
+            else:
+                opener = urllib.request.build_opener()
+            
+            response = opener.open(req, timeout=10)
+            content_type = response.headers.get('Content-Type', '')
+            
+            # 根据Content-Type映射扩展名
+            mime_to_ext = {
+                'application/pdf': '.pdf',
+                'application/zip': '.zip',
+                'application/x-zip-compressed': '.zip',
+                'application/octet-stream': '.exe',
+                'application/x-msdownload': '.exe',
+                'image/jpeg': '.jpg',
+                'image/png': '.png',
+                'image/gif': '.gif',
+                'image/webp': '.webp',
+                'video/mp4': '.mp4',
+                'audio/mpeg': '.mp3',
+                'text/html': '.html',
+                'text/plain': '.txt',
+                'application/json': '.json',
+            }
+            
+            return mime_to_ext.get(content_type, '')
+            
+        except:
+            return ''
 
 
 class DownloaderApp:
@@ -226,7 +308,7 @@ class DownloaderApp:
             threads = DEFAULT_THREADS
             
         # 创建任务
-        task = DownloadTask(url, self.config["default_path"], threads)
+        task = DownloadTask(url, self.config["default_path"], threads, self.config)
         
         # 检查文件是否已存在
         if os.path.exists(task.filepath):
@@ -516,7 +598,7 @@ class DownloaderApp:
             for url in urls:
                 if url.startswith(('http://', 'https://')):
                     task = DownloadTask(url, self.config["default_path"], 
-                                       self.config["default_threads"])
+                                       self.config["default_threads"], self.config)
                     self.tasks.append(task)
                     self.download_queue.put(task)
                     self.add_task_widget(task)
