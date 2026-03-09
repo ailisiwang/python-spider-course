@@ -1,0 +1,5 @@
+# Windows 多线程下载器依赖
+# 仅使用 Python 内置库，无需额外安装
+
+# 如需打包成 EXE，安装以下包:
+# pyinstaller>=5.0
